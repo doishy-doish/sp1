@@ -12,7 +12,7 @@
 //!
 //! Note on construction: column structs carry no `Default`, so cols are built
 //! the same way the chip itself does — a zeroed `repr(C)` buffer reinterpreted
-//! (BabyBear is plain u32 data, no invalid bit patterns; `populate` only writes
+//! (KoalaBear/SP1Field is plain u32 data, no invalid bit patterns; `populate` only writes
 //! col state before reading it, and the panicking path depends solely on the
 //! event bytes, so garbage-sensitivity cannot mask the finding).
 //!
@@ -23,17 +23,17 @@ use sp1_core_machine::{
     syscall::precompiles::edwards::EdDecompressCols, SupervisorMode,
 };
 use sp1_curves::edwards::ed25519::{Ed25519, Ed25519BaseField};
-use slop_algebra::BabyBear;
+use sp1_primitives::SP1Field;
 use std::mem::size_of;
 
 fn populate_no_panic(y_bytes: [u8; 32]) -> Option<String> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let n = size_of::<EdDecompressCols<BabyBear, SupervisorMode>>();
+        let n = size_of::<EdDecompressCols<SP1Field, SupervisorMode>>();
         let mut buf = vec![0u8; n];
-        // SAFETY: EdDecompressCols<BabyBear, _> is #[repr(C)] plain data; the
+        // SAFETY: EdDecompressCols<SP1Field, _> is #[repr(C)] plain data; the
         // buffer is exactly one struct long. populate() writes every field it
         // touches before reading it.
-        let cols: &mut EdDecompressCols<BabyBear, SupervisorMode> =
+        let cols: &mut EdDecompressCols<SP1Field, SupervisorMode> =
             unsafe { &mut *(buf.as_mut_ptr() as *mut _) };
         let mut record = ExecutionRecord::default();
         let event = EdDecompressEvent {

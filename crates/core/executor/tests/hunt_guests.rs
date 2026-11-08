@@ -54,25 +54,26 @@ fn run_guest(instrs: Vec<Instruction>) -> Outcome {
         let mut ex = MinimalExecutorEnum::new(Arc::new(prog), false, None);
         let mut steps = 0u32;
         loop {
+            // NOTE (native-backend port): the x86_64 MinimalExecutor exposes only
+            // `execute_chunk`, which panics (via expect) on ExecutionError traps.
+            // Trap-vs-panic is recovered from the panic payload: expect() prefixes
+            // trap payloads with "execute chunk"; genuine host panics (from_u32,
+            // curve expects, slice indexing) never carry that marker.
             let finished_or_err: Result<Option<[u64; 32]>, String> = match &mut ex {
                 MinimalExecutorEnum::Supervisor(inner) => {
                     if inner.is_done() {
                         Ok(Some(inner.registers()))
                     } else {
-                        inner
-                            .try_execute_chunk()
-                            .map(|_| None)
-                            .map_err(|e| format!("{e:?}"))
+                        inner.execute_chunk();
+                        Ok(None)
                     }
                 }
                 MinimalExecutorEnum::User(inner) => {
                     if inner.is_done() {
                         Ok(Some(inner.registers()))
                     } else {
-                        inner
-                            .try_execute_chunk()
-                            .map(|_| None)
-                            .map_err(|e| format!("{e:?}"))
+                        inner.execute_chunk();
+                        Ok(None)
                     }
                 }
             };
@@ -88,7 +89,14 @@ fn run_guest(instrs: Vec<Instruction>) -> Outcome {
         }
     }));
     match r {
-        Err(p) => Outcome::Panicked(panic_string(p)),
+        Err(p) => {
+            let s = panic_string(p);
+            if s.contains("execute chunk") {
+                Outcome::Trapped(s)
+            } else {
+                Outcome::Panicked(s)
+            }
+        }
         Ok(o) => o,
     }
 }

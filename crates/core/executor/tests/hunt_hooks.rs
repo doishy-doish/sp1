@@ -213,7 +213,7 @@ fn bls_total() {
             b
         }),
     ];
-    assert_total("hook_bls12_381_sqrt", cases, |buf| {
+    assert_total("hook_bls12_381_sqrt", cases.clone(), |buf| {
         hook_bls12_381_sqrt(HookEnv {}, buf)
     });
     assert_total("hook_bls12_381_inverse", cases, |buf| {
