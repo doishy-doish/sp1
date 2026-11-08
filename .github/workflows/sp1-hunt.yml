@@ -1,0 +1,107 @@
+name: sp1-hunt
+# Elite bug-hunter battery for the doishy-doish/sp1 public fork (branch hunt/*).
+# Doctrine: RED = bug confirmed (tests assert FIXED behavior; they fail while the
+# bug lives, which is the machine-readable PoC). GREEN = fixed. INCONCLUSIVE =
+# compile/setup error, never a finding. Legs are independent; one leg's failure
+# never blocks the others. See hunt/README.md.
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_pin:
+        description: 'Upstream SHA this battery was written against'
+        default: '749b0c63f226063c471a6238a94101f930c14a13'
+  schedule:
+    - cron: '0 6 * * 1' # weekly Monday: fresh-scope detection (moved HEAD = fresh scope)
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+jobs:
+  hunt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+      - name: record HEAD (fresh-scope detection)
+        run: |
+          git rev-parse HEAD > hunt-head.txt
+          git log -1 --format='%H %ad %s' >> "$GITHUB_STEP_SUMMARY"
+      - name: install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: rust cache (shared across legs)
+        uses: Swatinem/rust-cache@v2
+      - name: install SP1 toolchain (test-artifacts guest builds)
+        run: |
+          curl -L https://sp1.succinct.xyz | bash
+          ~/.sp1/bin/sp1up || true
+          echo "$HOME/.sp1/bin" >> $GITHUB_PATH
+          ls ~/.sp1 || true
+      - name: versions
+        run: rustc --version; cargo --version; ls ~/.sp1/bin || true
+
+      - name: leg 1/5 decode-totality (SP1-02A)
+        run: |
+          set +e
+          cargo test -p sp1-core-executor --test hunt_decode -- --nocapture --test-threads=8 2>&1 | tee leg-decode.log
+          echo "exit=${PIPESTATUS[0]}" | tee -a leg-decode.log
+
+      - name: leg 2/5 hook-matrix (SP1-02C)
+        run: |
+          set +e
+          cargo test -p sp1-core-executor --test hunt_hooks -- --nocapture --test-threads=8 2>&1 | tee leg-hooks.log
+          echo "exit=${PIPESTATUS[0]}" | tee -a leg-hooks.log
+
+      - name: leg 3/5 executor-guests (SP1-02A/B/D executor halves)
+        run: |
+          set +e
+          cargo test -p sp1-core-executor --test hunt_guests -- --nocapture --test-threads=2 2>&1 | tee leg-guests.log
+          echo "exit=${PIPESTATUS[0]}" | tee -a leg-guests.log
+
+      - name: leg 4/5 curves (SP1-01 + weierstrass edges)
+        run: |
+          set +e
+          cargo test -p sp1-curves --test hunt_curves -- --nocapture --test-threads=8 2>&1 | tee leg-curves.log
+          echo "exit=${PIPESTATUS[0]}" | tee -a leg-curves.log
+
+      - name: leg 5/5 populate-sweep (SP1-02D trace-gen half)
+        run: |
+          set +e
+          cargo test -p sp1-core-machine --test hunt_populate -- --nocapture --test-threads=4 2>&1 | tee leg-populate.log
+          echo "exit=${PIPESTATUS[0]}" | tee -a leg-populate.log
+
+      - name: classify (red=bug-confirmed, green=fixed, else inconclusive)
+        if: always()
+        run: |
+          python3 - <<'EOF' | tee hunt-summary.json
+          import json, re
+          legs = ["decode", "hooks", "guests", "curves", "populate"]
+          out = {"head": open("hunt-head.txt").read().strip(), "legs": {}}
+          for leg in legs:
+              try:
+                  log = open(f"leg-{leg}.log").read()
+              except FileNotFoundError:
+                  out["legs"][leg] = "INCONCLUSIVE (no log)"
+                  continue
+              if re.search(r"^error(\[|:)", log, re.M):
+                  out["legs"][leg] = "INCONCLUSIVE (compile error — see log)"
+              elif "test result: FAILED" in log:
+                  out["legs"][leg] = "BUG-CONFIRMED (fails = bug present, see panicked sites in log)"
+              elif "test result: ok" in log:
+                  out["legs"][leg] = "FIXED-CLEAN (all assertions pass)"
+              else:
+                  out["legs"][leg] = "INCONCLUSIVE (no test-result line)"
+          print(json.dumps(out, indent=1))
+          EOF
+          echo '## sp1-hunt summary' >> "$GITHUB_STEP_SUMMARY"
+          python3 -c "import json; [print(f'- leg {k}: **{v}**') for k,v in json.load(open('hunt-summary.json'))['legs'].items()]" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hunt-evidence
+          path: |
+            leg-*.log
+            hunt-summary.json
+            hunt-head.txt
